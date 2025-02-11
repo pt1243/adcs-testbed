@@ -27,6 +27,7 @@ while True:
         current_speed += 0.01
         set_speed(pwm, current_speed)
         print(f"Current speed is now {current_speed}")
-    sleep_ms(200)
+        sleep_ms(200)
+    sleep_ms(10)
 
     
