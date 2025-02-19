@@ -1,33 +1,15 @@
-from machine import Pin, UART
-from time import sleep_ms
-
+from machine import ADC, I2C, Pin, PWM, UART
+from time import sleep, sleep_ms
 
 led = Pin("LED", Pin.OUT)
 
-uart = UART(0)
-uart.init(tx=Pin(0), rx=Pin(1))
+light_sensor_0 = ADC(Pin(26))
+light_sensor_1 = ADC(Pin(27))
+light_sensor_2 = ADC(Pin(28))
 
-# indicate successful startup:
-led.value(1)
-sleep_ms(1000)
-led.value(0)
+uart = UART(0)
+uart.init(tx=Pin(16), rx=Pin(17))
 
 while True:
-    while not uart.any():
-        sleep_ms(50)
-
-    value = uart.read()
-    sleep_ms(200)
-    if len(value) > 1:
-        # indicate error
-        for _ in range(3):
-            led.value(1)
-            sleep_ms(400)
-            led.value(0)
-            sleep_ms(200)
-    else:
-        for _ in range(value[0]):
-            led.value(1)
-            sleep_ms(100)
-            led.value(0)
-            sleep_ms(100)
+    led.value(not led.value())
+    sleep(0.1)
