@@ -13,30 +13,30 @@ control = Pin(0, Pin.OUT, pull=None)
 
 def set_speed(pwm: PWM, speed: float):
     speed = min(1, max(0, speed))  # clip to [0, 1]
-    pwm.duty_u16(65535 - int(1630 * (1 - speed) + 8200 * speed))
+    pwm.duty_u16(65535 - int(3260 * (1 - speed) + 6540 * speed))
 
 pwm = PWM(control, freq=50)
 
 
-set_speed(pwm, 0.75)
+set_speed(pwm, 1.0)
 print("setting max speed")
 while True:
     if rp2.bootsel_button():
         break
     sleep_ms(50)
 
-set_speed(pwm, 0.25)
+set_speed(pwm, 0.0)
 print("setting min speed")
 
 sleep_ms(1000)
 
-print("press button to go to 5% throttle...")
+print("press button to go to 10% throttle...")
 while True:
     if rp2.bootsel_button():
         break
     sleep_ms(50)
 
-set_speed(pwm, 0.30)
+set_speed(pwm, 0.10)
 
 while True:
     sleep_ms(1000)
