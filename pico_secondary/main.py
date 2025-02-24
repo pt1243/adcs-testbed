@@ -1,6 +1,6 @@
-from micropython import const
 from machine import ADC, Pin, UART
-from time import ticks_us, ticks_diff
+from time import sleep_ms, sleep_us
+import rp2
 
 led = Pin("LED", Pin.OUT)
 led.value(0)
@@ -14,6 +14,18 @@ uart.init(tx=Pin(16), rx=Pin(17))
 
 values_buffer = bytearray(6)
 
+# startup sequence
+while True:
+    if rp2.bootsel_button():
+        uart.write(b"\xff")
+        while not uart.txdone():
+            sleep_us(200)
+        break
+    if uart.any() and uart.read() == b"\x00":
+        break
+    sleep_ms(5)
+
+uart.read()  # clear any remaining reads
 while True:
     # led.value(not led.value())
     # sleep(0.1)

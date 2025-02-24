@@ -1,7 +1,7 @@
 from micropython import const
 from machine import ADC, I2C, Pin, PWM, UART
 import rp2
-from time import sleep, sleep_ms, ticks_ms, ticks_us, ticks_diff
+from time import sleep, sleep_ms, sleep_us, ticks_ms, ticks_us, ticks_diff
 from collections import deque
 
 led = Pin("LED", Pin.OUT)
@@ -20,9 +20,10 @@ def flash_error_message(num_flashes: int) -> None:
         sleep_ms(1000 - 2 * num_flashes * 100)
 
 
-light_sensor_0 = ADC(Pin(26))
-light_sensor_1 = ADC(Pin(27))
-light_sensor_2 = ADC(Pin(28))
+light_sensor_1 = ADC(Pin(28))
+light_sensor_2 = ADC(Pin(27))
+light_sensor_3 = ADC(Pin(26))
+
 
 uart = UART(0)
 uart.init(tx=Pin(12), rx=Pin(13))
@@ -216,7 +217,8 @@ class PID:
         self.Kd = Kd
         self.setpoint = setpoint
         self.max_delta = max_delta
-        self.integral_buffer = deque([0 for _ in range(10)], 10)
+        self.use_integral_buffer = False
+        self.integral_buffer = deque([0 for _ in range(25)], 25)
         self.accumulated_integral_error = 0.
         self.last_time: int | None = None
         self.last_error: float | None = None
@@ -241,15 +243,21 @@ class PID:
         
         # integral term: we need to keep track of the error over time
         if self.last_error is None:
-            # integral_error = error * dt_integral
-            self.accumulated_integral_error += error * dt_integral
+            integral_error = error * dt_integral
         else:
-            self.accumulated_integral_error += (error + self.last_error) / 2 * dt_integral
+            integral_error = (error + self.last_error) / 2 * dt_integral
+        
+        if self.use_integral_buffer:
+            self.integral_buffer.append(integral_error)
+            integral_term = self.Ki * sum(self.integral_buffer)
+        else:
+            self.accumulated_integral_error += integral_error
+            integral_term = self.Ki * self.accumulated_integral_error
             # integral_error = (error + self.last_error) / 2 * dt_integral
         # self.integral_buffer.append(integral_error)
 
         # integral_term = self.Ki * sum(self.integral_buffer)
-        integral_term = self.Ki * self.accumulated_integral_error
+        # integral_term = self.Ki * self.accumulated_integral_error
         # print(f"Accumulated integral: {self.accumulated_integral_error:+.6f}")
         # TODO: limit integral windup
         integral_term = min(0.10, max(-0.10, integral_term))
@@ -276,7 +284,7 @@ class PID:
 
         return min(max(-self.max_delta, output), self.max_delta)
 
-pid = PID(1e-3, 1e-4, 0, 0., max_delta=0.10)
+pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
 PROPORTIONALITY_CONSTANT = 3e-2
 nominal_speed = 0.18
 
@@ -284,11 +292,43 @@ BUFFER_LENGTH = 10
 initial_reading = read_imu_gyro_z()
 z_gyro_buffer = deque([initial_reading for _ in range(BUFFER_LENGTH)], BUFFER_LENGTH)
 
-print("waiting for ready")
+print("waiting for ready: primary button for detumbling, or secondary button for light following")
+DETUMBLING_MODE = True
+
+light_sensor_buffer = bytearray(6)
+
+def read_light_sensors_from_secondary() -> tuple[int, int, int]:
+    uart.write(b"\xff")
+    # TODO: figure out how long to wait
+    while not uart.any():
+        sleep_ms(1)
+    sleep_ms(10)
+    uart.readinto(light_sensor_buffer)
+    return (
+        (light_sensor_buffer[0] << 8) + light_sensor_buffer[1],
+        (light_sensor_buffer[2] << 8) + light_sensor_buffer[3],
+        (light_sensor_buffer[4] << 8) + light_sensor_buffer[5],
+    )
+
 while True:
     if rp2.bootsel_button():
+        uart.write(b"\x00")  # indicate detumbling mode
+        while not uart.txdone():
+            sleep_us(200)
+        print("DETUMBLING MODE SELECTED")
+        pid.setpoint = -60
+        pid.Kp *= 1
+        pid.Ki *= 1
         break
-    sleep_ms(10)
+    elif uart.any() and uart.read() == b"\xff":  # light-following mode
+        DETUMBLING_MODE = False
+        print("LIGHT-FOLLOWING MODE SELECTED")
+        pid.Kp *= 1
+        pid.Ki *= 1
+        pid.use_integral_buffer = False
+        break
+    sleep_ms(5)
+uart.read()  # ensure that everything is cleared
 
 print("about to start spinning...")
 sleep_ms(1000)
@@ -301,11 +341,51 @@ while True:
         break
     sleep_ms(10)
 
-print("waiting to begin PID control...")
+print("waiting to begin active control...")
 sleep_ms(1000)
-print("beginning PID control")
+print("beginning active control")
 
 current_speed = nominal_speed
+
+LIGHT_SENSOR_BUFFER_LENGTH = 25
+light_sensor_1_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+light_sensor_2_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+light_sensor_3_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+light_sensor_4_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+light_sensor_5_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+light_sensor_6_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
+
+
+FAST_ROTATION_RATE = 30
+SLOW_ROTATION_RATE = 20
+FINE_ROTATION_RATE = 10
+
+def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
+    highest_light_sensor = 1
+    highest_light_sensor_value = light_sensor_readings[0]
+    for i, value in enumerate(light_sensor_readings[1:], start=2):
+        if value > highest_light_sensor_value:
+            highest_light_sensor_value = value
+            highest_light_sensor = i
+    if highest_light_sensor == 3:
+        print(f"Max light sensor is 3, commanding {FAST_ROTATION_RATE} dps")
+        return FAST_ROTATION_RATE
+    elif highest_light_sensor == 4:
+        print(f"Max light sensor is 4, commanding {-FAST_ROTATION_RATE} dps")
+        return -FAST_ROTATION_RATE
+    elif highest_light_sensor == 2:
+        print(f"Max light sensor is 2, commanding {SLOW_ROTATION_RATE} dps")
+        return SLOW_ROTATION_RATE
+    elif highest_light_sensor == 5:
+        print(f"Max light sensor is 5, commanding {-SLOW_ROTATION_RATE} dps")
+        return -SLOW_ROTATION_RATE
+    else:
+        if highest_light_sensor == 1:
+            print(f"Max light sensor is 1, commanding {FINE_ROTATION_RATE} dps")
+            return FINE_ROTATION_RATE
+        else:
+            print(f"Max light sensor is 6, commanding {-FINE_ROTATION_RATE} dps")
+            return -FINE_ROTATION_RATE
 
 last_pid_call = ticks_us()
 # main control loop
@@ -318,24 +398,46 @@ while True:
             sleep_ms(1000)
 
     current_rotation_rate = read_imu_gyro_z()
-    if abs(current_rotation_rate) <= 1:
+    if abs(pid.setpoint - current_rotation_rate) <= 1:
         led.value(1)
     else:
         led.value(0)
     z_gyro_buffer.append(current_rotation_rate)
 
-
     current_time = ticks_us()
     time_since_last_pid_call_ms = ticks_diff(current_time, last_pid_call) / 1000
-    if time_since_last_pid_call_ms >= 100:
-        last_pid_call = current_time
+    if DETUMBLING_MODE:
+        if time_since_last_pid_call_ms >= 100:
+            last_pid_call = current_time
+            averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
+            print(f"\nCalling PID with rotation rate of {averaged_input:+.4f} dps")
+            diff = pid.get_control_output(averaged_input)
+            current_speed = nominal_speed + diff
+            print(f"Commanded current speed is now {current_speed:.6f}")
+            set_speed(current_speed)
+    else:
+        light_sensor_4_value, light_sensor_5_value, light_sensor_6_value = read_light_sensors_from_secondary()
+        light_sensor_1_buffer.append(light_sensor_1.read_u16())
+        light_sensor_2_buffer.append(light_sensor_2.read_u16())
+        light_sensor_3_buffer.append(light_sensor_3.read_u16())
+        light_sensor_4_buffer.append(light_sensor_4_value)
+        light_sensor_5_buffer.append(light_sensor_5_value)
+        light_sensor_6_buffer.append(light_sensor_6_value)
+        if time_since_last_pid_call_ms >= 100:
+            last_pid_call = current_time
+            averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
+            pid.setpoint = get_desired_setpoint([
+                sum(light_sensor_1_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+                sum(light_sensor_2_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+                sum(light_sensor_3_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+                sum(light_sensor_4_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+                sum(light_sensor_5_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+                sum(light_sensor_6_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
+            ])
+            diff = pid.get_control_output(averaged_input)
+            current_speed = nominal_speed + diff
+            set_speed(current_speed)
 
-        averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
-        print(f"\nCalling PID with rotation rate of {averaged_input:+.4f} dps")
-        diff = pid.get_control_output(averaged_input)
-        current_speed = nominal_speed + diff
-        print(f"Commanded current speed is now {current_speed:.6f}")
-        set_speed(current_speed)
         # current_speed += diff * PROPORTIONALITY_CONSTANT
         # current_speed = min(max(0.08, current_speed), 0.28)
         # set_speed(current_speed)

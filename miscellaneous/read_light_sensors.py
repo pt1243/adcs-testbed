@@ -16,7 +16,8 @@ def read_light_sensors_from_secondary() -> tuple[int, int, int]:
     while not uart.any():
         sleep_ms(1)
     sleep_ms(10)
-    uart.readinto(light_sensor_buffer)
+    bytes_read = uart.readinto(light_sensor_buffer)
+    print(f"Read {bytes_read} bytes")
     return (
         (light_sensor_buffer[0] << 8) + light_sensor_buffer[1],
         (light_sensor_buffer[2] << 8) + light_sensor_buffer[3],
