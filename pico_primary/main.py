@@ -37,8 +37,7 @@ def set_speed(speed: float) -> None:
     pwm.duty_u16(65535 - int(3260 * (1 - speed) + 6540 * speed))
 
 
-current_speed = 0
-set_speed(current_speed)
+set_speed(0)
 
 # IMU
 IMU = const(0x69)  # I2C bus address for the IMU
@@ -211,11 +210,12 @@ def read_imu_gyro_z() -> float:
 
 
 class PID:
-    def __init__(self, Kp: float, Ki: float, Kd: float, setpoint: float) -> None:
+    def __init__(self, Kp: float, Ki: float, Kd: float, setpoint: float, max_delta: float = 0.10) -> None:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
         self.setpoint = setpoint
+        self.max_delta = max_delta
         self.integral_buffer = deque([0 for _ in range(10)], 10)
         self.accumulated_integral_error = 0.
         self.last_time: int | None = None
@@ -252,11 +252,11 @@ class PID:
         integral_term = self.Ki * self.accumulated_integral_error
         # print(f"Accumulated integral: {self.accumulated_integral_error:+.6f}")
         # TODO: limit integral windup
-        integral_term = min(0.08, max(-0.08, integral_term))
+        integral_term = min(0.10, max(-0.10, integral_term))
 
         if dt_derivative is not None and self.last_error is not None:
             d_error = error - self.last_error
-            derivative_term = -self.Kd * d_error / dt_derivative * 1e-6
+            derivative_term = -self.Kd * d_error / dt_derivative
         else:
             derivative_term = 0
 
@@ -265,19 +265,19 @@ class PID:
         print(f"I:      {integral_term:+.6f}")
         print(f"D:      {derivative_term:+.6f}")
         print(f"Output: {output:+.6f}")
-        print()
 
         self.last_error = error
         self.last_time = current_time
 
-        if output <= -0.10 or output >= 0.10:
+        if output <= self.max_delta or output >= self.max_delta:  # indicate PID output over limits
             led.value(1)
         else:
             led.value(0)
 
-        return min(max(-0.10, output), 0.10)
+        return min(max(-self.max_delta, output), self.max_delta)
 
-pid = PID(6e-4, 3e-4, 1, 0.)
+pid = PID(1e-3, 1e-4, 0, 0., max_delta=0.10)
+PROPORTIONALITY_CONSTANT = 3e-2
 nominal_speed = 0.18
 
 BUFFER_LENGTH = 10
@@ -305,6 +305,8 @@ print("waiting to begin PID control...")
 sleep_ms(1000)
 print("beginning PID control")
 
+current_speed = nominal_speed
+
 last_pid_call = ticks_us()
 # main control loop
 while True:
@@ -329,10 +331,14 @@ while True:
         last_pid_call = current_time
 
         averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
-        print(f"Calling PID with rotation rate of {averaged_input:+.4f} dps")
+        print(f"\nCalling PID with rotation rate of {averaged_input:+.4f} dps")
         diff = pid.get_control_output(averaged_input)
-        
-        set_speed(nominal_speed + diff)
+        current_speed = nominal_speed + diff
+        print(f"Commanded current speed is now {current_speed:.6f}")
+        set_speed(current_speed)
+        # current_speed += diff * PROPORTIONALITY_CONSTANT
+        # current_speed = min(max(0.08, current_speed), 0.28)
+        # set_speed(current_speed)
 
 
 
