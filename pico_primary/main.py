@@ -64,25 +64,6 @@ def setup_IMU() -> None:
     # set sensitivity values
     # TODO: document all these values!
 
-    # DLPF_CFG = 6  # 0 through 7
-    # print((DLPF_CFG << 0) == 0b0_0_000_110)
-
-    # FCHOICE_B = 0  # 0 through 3
-    # FS_SEL = 0  # 0 through 3
-    # print((FS_SEL << 3 + FCHOICE_B << 0) == 0b000_00_0_00)
-
-    # ACCEL_FS_SEL = 0  # 0 through 3
-    # print((ACCEL_FS_SEL << 3) == 0b000_00_000)
-
-    # A_DLPF_CFG = 0  # 0 through 7
-    # ACCEL_FCHOICE_B = 1  # 0 or 1
-    # DEC2_CFG = 3  # 0 through 3
-    # print((A_DLPF_CFG << 0 + ACCEL_FCHOICE_B << 3 + DEC2_CFG << 4) == 0b00_11_1_000)
-
-    # G_AVGCFG = 0  # 0 through 7
-    # GYRO_CYCLE = 1  # 0 or 1
-    # print((G_AVGCFG << 4 + GYRO_CYCLE << 7) == 0b1_000_0000)
-
     # whatever configuration this is seems to work
     i2c.writeto_mem(IMU, REG_CONFIG, bytes([0b0_0_000_110]))
     #                                                 +++----------- DLPF_CFG
@@ -147,68 +128,6 @@ def read_imu_gyro_z() -> float:
     return read_16_bit_signed(z_gyro) * GYRO_FACTOR
 
 
-# x_gyro_buffer = deque([0 for _ in range(BUFFER_LENGTH)], BUFFER_LENGTH)
-# y_gyro_buffer = deque([0 for _ in range(BUFFER_LENGTH)], BUFFER_LENGTH)
-
-# while True:
-#     if rp2.bootsel_button():
-#         break
-#     sleep_ms(10)
-
-# sleep_ms(1000)
-# set_speed(0.10)
-
-# while True:
-#     if rp2.bootsel_button():
-#         break
-#     sleep_ms(10)
-
-# set_speed(0)
-
-# while True:
-#     sleep_ms(100)
-
-# while True:
-    # start = ticks_us()
-    # imu_value = read_imu()
-    # x_gyro_buffer.append(imu_value[3])
-    # y_gyro_buffer.append(imu_value[4])
-    # z_gyro_buffer.append(imu_value[5])
-    # readings += 1
-    # end = ticks_us()
-    # print(f"Reading values into buffer took {ticks_diff(end, start) / 1000} ms")
-
-    # current_time = ticks_us()
-    # time_since_last_report = ticks_diff(current_time, last_reported_measurement) / 1000
-    # # print(f"Time since last report: {time_since_last_report} ms")
-
-    # if time_since_last_report >= 100:  # 100 ms
-    #     print(
-    #         f"Current buffer values, from {readings} readings: {sum(x_gyro_buffer) / BUFFER_LENGTH}, {sum(y_gyro_buffer) / BUFFER_LENGTH}, {sum(z_gyro_buffer) / BUFFER_LENGTH}"
-    #     )
-    #     last_reported_measurement = ticks_us()
-    #     readings = 0
-
-    # end = ticks_us()
-    # print(f"IMU value: {imu_value[3:]}")
-    # print(f"Time to read IMU: {ticks_diff(end, start) / 1000} ms")
-
-    # start = ticks_ms()
-    # for _ in range(1000):
-    #     read_imu()
-    # end = ticks_ms()
-    # print(f"Time in ms to read IMU, averaged over 1000 readings: {ticks_diff(end, start) / 1000}")
-    # light_sensor_0_value = light_sensor_0.read_u16()
-    # light_sensor_1_value = light_sensor_1.read_u16()
-    # light_sensor_2_value = light_sensor_2.read_u16()
-
-    # print(f"Light sensor 0: {light_sensor_0_value}")
-    # print(f"Light sensor 1: {light_sensor_1_value}")
-    # print(f"Light sensor 2: {light_sensor_2_value}")
-    # print()
-
-    # sleep_ms(200)
-
 
 class PID:
     def __init__(self, Kp: float, Ki: float, Kd: float, setpoint: float, max_delta: float = 0.10) -> None:
@@ -217,7 +136,7 @@ class PID:
         self.Kd = Kd
         self.setpoint = setpoint
         self.max_delta = max_delta
-        self.use_integral_buffer = False
+        self.use_integral_buffer = False  # by default, use the infinite integral
         self.integral_buffer = deque([0 for _ in range(25)], 25)
         self.accumulated_integral_error = 0.
         self.last_time: int | None = None
@@ -226,7 +145,7 @@ class PID:
     def get_control_output(self, rotation_rate: float) -> float:
         # NOTE: this assumes that a positive error is associated with an increased control output
         # input: rotation rate in degrees per second
-        # output: throttle level
+        # output: difference from nominal throttle level
 
         error = self.setpoint - rotation_rate
         current_time = ticks_us()
@@ -253,12 +172,7 @@ class PID:
         else:
             self.accumulated_integral_error += integral_error
             integral_term = self.Ki * self.accumulated_integral_error
-            # integral_error = (error + self.last_error) / 2 * dt_integral
-        # self.integral_buffer.append(integral_error)
 
-        # integral_term = self.Ki * sum(self.integral_buffer)
-        # integral_term = self.Ki * self.accumulated_integral_error
-        # print(f"Accumulated integral: {self.accumulated_integral_error:+.6f}")
         # TODO: limit integral windup
         integral_term = min(0.10, max(-0.10, integral_term))
 
@@ -285,7 +199,6 @@ class PID:
         return min(max(-self.max_delta, output), self.max_delta)
 
 pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
-PROPORTIONALITY_CONSTANT = 3e-2
 nominal_speed = 0.18
 
 BUFFER_LENGTH = 10
@@ -437,11 +350,6 @@ while True:
             diff = pid.get_control_output(averaged_input)
             current_speed = nominal_speed + diff
             set_speed(current_speed)
-
-        # current_speed += diff * PROPORTIONALITY_CONSTANT
-        # current_speed = min(max(0.08, current_speed), 0.28)
-        # set_speed(current_speed)
-
 
 
 
