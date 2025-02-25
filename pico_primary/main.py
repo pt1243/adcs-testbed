@@ -191,15 +191,16 @@ class PID:
         self.last_error = error
         self.last_time = current_time
 
-        if output <= self.max_delta or output >= self.max_delta:  # indicate PID output over limits
-            led.value(1)
-        else:
-            led.value(0)
+        # if output <= self.max_delta or output >= self.max_delta:  # indicate PID output over limits
+        #     led.value(1)
+        # else:
+        #     led.value(0)
 
         return min(max(-self.max_delta, output), self.max_delta)
 
-pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
-nominal_speed = 0.18
+# pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
+pid = PID(2e-3, 8e-4, 0, 0., max_delta=0.15)
+nominal_speed = 0.23
 
 BUFFER_LENGTH = 10
 initial_reading = read_imu_gyro_z()
@@ -229,7 +230,7 @@ while True:
         while not uart.txdone():
             sleep_us(200)
         print("DETUMBLING MODE SELECTED")
-        pid.setpoint = -60
+        pid.setpoint = 0
         pid.Kp *= 1
         pid.Ki *= 1
         break
@@ -273,6 +274,34 @@ FAST_ROTATION_RATE = 30
 SLOW_ROTATION_RATE = 20
 FINE_ROTATION_RATE = 10
 
+# def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
+#     highest_light_sensor = 1
+#     highest_light_sensor_value = light_sensor_readings[0]
+#     for i, value in enumerate(light_sensor_readings[1:], start=2):
+#         if value > highest_light_sensor_value:
+#             highest_light_sensor_value = value
+#             highest_light_sensor = i
+#     if highest_light_sensor == 3:
+#         print(f"Max light sensor is 3, commanding {FAST_ROTATION_RATE} dps")
+#         return FAST_ROTATION_RATE
+#     elif highest_light_sensor == 4:
+#         print(f"Max light sensor is 4, commanding {-FAST_ROTATION_RATE} dps")
+#         return -FAST_ROTATION_RATE
+#     elif highest_light_sensor == 2:
+#         print(f"Max light sensor is 2, commanding {SLOW_ROTATION_RATE} dps")
+#         return SLOW_ROTATION_RATE
+#     elif highest_light_sensor == 5:
+#         print(f"Max light sensor is 5, commanding {-SLOW_ROTATION_RATE} dps")
+#         return -SLOW_ROTATION_RATE
+#     else:
+#         if highest_light_sensor == 1:
+#             print(f"Max light sensor is 1, commanding {FINE_ROTATION_RATE} dps")
+#             return FINE_ROTATION_RATE
+#         else:
+#             print(f"Max light sensor is 6, commanding {-FINE_ROTATION_RATE} dps")
+#             return -FINE_ROTATION_RATE
+
+
 def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
     highest_light_sensor = 1
     highest_light_sensor_value = light_sensor_readings[0]
@@ -291,14 +320,15 @@ def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
         return SLOW_ROTATION_RATE
     elif highest_light_sensor == 5:
         print(f"Max light sensor is 5, commanding {-SLOW_ROTATION_RATE} dps")
-        return -SLOW_ROTATION_RATE
+        return -FAST_ROTATION_RATE
     else:
         if highest_light_sensor == 1:
             print(f"Max light sensor is 1, commanding {FINE_ROTATION_RATE} dps")
-            return FINE_ROTATION_RATE
+            return 0
         else:
             print(f"Max light sensor is 6, commanding {-FINE_ROTATION_RATE} dps")
-            return -FINE_ROTATION_RATE
+            return -SLOW_ROTATION_RATE
+
 
 last_pid_call = ticks_us()
 # main control loop
@@ -311,7 +341,7 @@ while True:
             sleep_ms(1000)
 
     current_rotation_rate = read_imu_gyro_z()
-    if abs(pid.setpoint - current_rotation_rate) <= 1:
+    if abs(pid.setpoint - current_rotation_rate) <= 0.5:
         led.value(1)
     else:
         led.value(0)
