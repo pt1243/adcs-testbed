@@ -3,6 +3,7 @@ from machine import ADC, I2C, Pin, PWM, UART
 import rp2
 from time import sleep, sleep_ms, sleep_us, ticks_ms, ticks_us, ticks_diff
 from collections import deque
+import gc
 
 led = Pin("LED", Pin.OUT)
 led.value(0)
@@ -128,6 +129,13 @@ def read_imu_gyro_z() -> float:
     return read_16_bit_signed(z_gyro) * GYRO_FACTOR
 
 
+times_rates = []
+rates = []
+times_outputs = []
+outputs = []
+p_outputs = []
+i_outputs = []
+d_outputs = []
 
 class PID:
     def __init__(self, Kp: float, Ki: float, Kd: float, setpoint: float, max_delta: float = 0.10) -> None:
@@ -174,7 +182,7 @@ class PID:
             integral_term = self.Ki * self.accumulated_integral_error
 
         # TODO: limit integral windup
-        integral_term = min(0.10, max(-0.10, integral_term))
+        integral_term = min(0.2, max(-0.2, integral_term))
 
         if dt_derivative is not None and self.last_error is not None:
             d_error = error - self.last_error
@@ -188,6 +196,16 @@ class PID:
         print(f"D:      {derivative_term:+.6f}")
         print(f"Output: {output:+.6f}")
 
+        try:
+            times_outputs.append(current_time)
+            p_outputs.append(proportional_term)
+            i_outputs.append(integral_term)
+            d_outputs.append(derivative_term)
+            outputs.append(output)
+        except MemoryError:
+            set_speed(0)
+            flash_error_message(2)
+
         self.last_error = error
         self.last_time = current_time
 
@@ -199,7 +217,7 @@ class PID:
         return min(max(-self.max_delta, output), self.max_delta)
 
 # pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
-pid = PID(2e-3, 8e-4, 0, 0., max_delta=0.15)
+pid = PID(1e-3, 3e-4, 5e-5, 0., max_delta=0.15)
 nominal_speed = 0.23
 
 BUFFER_LENGTH = 10
@@ -261,7 +279,7 @@ print("beginning active control")
 
 current_speed = nominal_speed
 
-LIGHT_SENSOR_BUFFER_LENGTH = 25
+LIGHT_SENSOR_BUFFER_LENGTH = 50
 light_sensor_1_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
 light_sensor_2_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
 light_sensor_3_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LIGHT_SENSOR_BUFFER_LENGTH)
@@ -272,7 +290,7 @@ light_sensor_6_buffer = deque([0 for _ in range(LIGHT_SENSOR_BUFFER_LENGTH)], LI
 
 FAST_ROTATION_RATE = 30
 SLOW_ROTATION_RATE = 20
-FINE_ROTATION_RATE = 10
+FINE_ROTATION_RATE = 20
 
 # def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
 #     highest_light_sensor = 1
@@ -320,25 +338,33 @@ def get_desired_setpoint(light_sensor_readings: list[int]) -> float:
         return SLOW_ROTATION_RATE
     elif highest_light_sensor == 5:
         print(f"Max light sensor is 5, commanding {-SLOW_ROTATION_RATE} dps")
-        return -FAST_ROTATION_RATE
+        return -SLOW_ROTATION_RATE
     else:
-        if highest_light_sensor == 1:
-            print(f"Max light sensor is 1, commanding {FINE_ROTATION_RATE} dps")
-            return 0
-        else:
-            print(f"Max light sensor is 6, commanding {-FINE_ROTATION_RATE} dps")
-            return -SLOW_ROTATION_RATE
+        fraction = light_sensor_readings[5] / (light_sensor_readings[0] + light_sensor_readings[5])
+        print(f"Fraction = {fraction}, commanded rotation rate is {FINE_ROTATION_RATE - fraction * 2 * FINE_ROTATION_RATE} dps")
+        return FINE_ROTATION_RATE - fraction * 2 * FINE_ROTATION_RATE
 
 
 last_pid_call = ticks_us()
+start = last_pid_call
+last_recording = last_pid_call
+pid.setpoint = 0
+control = True
 # main control loop
 while True:
     if rp2.bootsel_button():
         print("exiting")
         set_speed(0)
+        led.value(1)
+        with open("recording.txt", "w+") as f:
+            for (time, rate) in zip(times_rates, rates):
+                f.write(f"0 {time} {rate} 0 0 0\n")
+            for (time, output, p, i, d) in zip(times_outputs, outputs, p_outputs, i_outputs, d_outputs):
+                f.write(f"1 {time} {output} {p} {i} {d}\n")
         led.value(0)
         while True:
             sleep_ms(1000)
+
 
     current_rotation_rate = read_imu_gyro_z()
     if abs(pid.setpoint - current_rotation_rate) <= 0.5:
@@ -348,6 +374,20 @@ while True:
     z_gyro_buffer.append(current_rotation_rate)
 
     current_time = ticks_us()
+    
+    if ticks_diff(current_time, last_recording) >= 100_000:
+        last_recording = current_time
+        try:
+            times_rates.append(current_time)
+            rates.append(sum(z_gyro_buffer) / BUFFER_LENGTH)
+        except MemoryError:
+            set_speed(0)
+            flash_error_message(2)
+
+    if ticks_diff(current_time, start) >= 5_000_000 and control:
+        control = False
+        pid.setpoint = 0
+
     time_since_last_pid_call_ms = ticks_diff(current_time, last_pid_call) / 1000
     if DETUMBLING_MODE:
         if time_since_last_pid_call_ms >= 100:
