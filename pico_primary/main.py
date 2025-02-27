@@ -1,9 +1,8 @@
 from micropython import const
 from machine import ADC, I2C, Pin, PWM, UART
 import rp2
-from time import sleep, sleep_ms, sleep_us, ticks_ms, ticks_us, ticks_diff
+from time import sleep_ms, sleep_us, ticks_us, ticks_diff
 from collections import deque
-import gc
 
 led = Pin("LED", Pin.OUT)
 led.value(0)
@@ -78,7 +77,7 @@ def setup_IMU() -> None:
     #                                                    || +------- ACCEL_FCHOICE_B
     #                                                    ++--------- DEC2_CFG
     i2c.writeto_mem(IMU, REG_LP_MODE_CFG, bytes([0b1_000_0000]))
-    #                                              | +++------------ G_AVGCFG
+    #                                              | +++------------ G_AVGCFG TODO: investigate
     #                                              +---------------- GYRO_CYCLE
 
 
@@ -129,13 +128,14 @@ def read_imu_gyro_z() -> float:
     return read_16_bit_signed(z_gyro) * GYRO_FACTOR
 
 
-times_rates = []
-rates = []
-times_outputs = []
-outputs = []
-p_outputs = []
-i_outputs = []
-d_outputs = []
+# times_rates = []
+# rates = []
+# times_outputs = []
+# commanded_rates = []
+# outputs = []
+# p_outputs = []
+# i_outputs = []
+# d_outputs = []
 
 class PID:
     def __init__(self, Kp: float, Ki: float, Kd: float, setpoint: float, max_delta: float = 0.10) -> None:
@@ -196,15 +196,15 @@ class PID:
         print(f"D:      {derivative_term:+.6f}")
         print(f"Output: {output:+.6f}")
 
-        try:
-            times_outputs.append(current_time)
-            p_outputs.append(proportional_term)
-            i_outputs.append(integral_term)
-            d_outputs.append(derivative_term)
-            outputs.append(output)
-        except MemoryError:
-            set_speed(0)
-            flash_error_message(2)
+        # try:
+        #     times_outputs.append(current_time)
+        #     p_outputs.append(proportional_term)
+        #     i_outputs.append(integral_term)
+        #     d_outputs.append(derivative_term)
+        #     outputs.append(output)
+        # except MemoryError:
+        #     set_speed(0)
+        #     flash_error_message(2)
 
         self.last_error = error
         self.last_time = current_time
@@ -217,7 +217,8 @@ class PID:
         return min(max(-self.max_delta, output), self.max_delta)
 
 # pid = PID(4e-3, 4e-4, 0, 0., max_delta=0.10)
-pid = PID(1e-3, 3e-4, 5e-5, 0., max_delta=0.15)
+pid = PID(1e-3, 3e-4, 5e-5, 0., max_delta=0.15)  # FOR DETUMBLING
+# pid = PID(3e-3, 5e-4, 5e-5, 0., max_delta=0.15)  # FOR LIGHT-FOLLOWING
 nominal_speed = 0.23
 
 BUFFER_LENGTH = 10
@@ -249,14 +250,14 @@ while True:
             sleep_us(200)
         print("DETUMBLING MODE SELECTED")
         pid.setpoint = 0
-        pid.Kp *= 1
-        pid.Ki *= 1
+        pid.Kp = 1e-3
+        pid.Ki = 3e-4
         break
     elif uart.any() and uart.read() == b"\xff":  # light-following mode
         DETUMBLING_MODE = False
         print("LIGHT-FOLLOWING MODE SELECTED")
-        pid.Kp *= 1
-        pid.Ki *= 1
+        pid.Kp = 3e-3
+        pid.Ki = 5e-4
         pid.use_integral_buffer = False
         break
     sleep_ms(5)
@@ -349,19 +350,18 @@ last_pid_call = ticks_us()
 start = last_pid_call
 last_recording = last_pid_call
 pid.setpoint = 0
-control = True
 # main control loop
 while True:
     if rp2.bootsel_button():
         print("exiting")
         set_speed(0)
-        led.value(1)
-        with open("recording.txt", "w+") as f:
-            for (time, rate) in zip(times_rates, rates):
-                f.write(f"0 {time} {rate} 0 0 0\n")
-            for (time, output, p, i, d) in zip(times_outputs, outputs, p_outputs, i_outputs, d_outputs):
-                f.write(f"1 {time} {output} {p} {i} {d}\n")
-        led.value(0)
+        # led.value(1)
+        # with open("recording.txt", "w+") as f:
+        #     for (time, rate, commanded_rate) in zip(times_rates, rates, commanded_rates):
+        #         f.write(f"0 {time} {rate} {commanded_rate} 0 0\n")
+        #     for (time, output, p, i, d) in zip(times_outputs, outputs, p_outputs, i_outputs, d_outputs):
+        #         f.write(f"1 {time} {output} {p} {i} {d}\n")
+        # led.value(0)
         while True:
             sleep_ms(1000)
 
@@ -375,22 +375,18 @@ while True:
 
     current_time = ticks_us()
     
-    if ticks_diff(current_time, last_recording) >= 100_000:
-        last_recording = current_time
-        try:
-            times_rates.append(current_time)
-            rates.append(sum(z_gyro_buffer) / BUFFER_LENGTH)
-        except MemoryError:
-            set_speed(0)
-            flash_error_message(2)
+    # if ticks_diff(current_time, last_recording) >= 100_000:
+    #     last_recording = current_time
+    #     try:
+    #         times_rates.append(current_time)
+    #         rates.append(sum(z_gyro_buffer) / BUFFER_LENGTH)
+    #     except MemoryError:
+    #         set_speed(0)
+    #         flash_error_message(2)
 
-    if ticks_diff(current_time, start) >= 5_000_000 and control:
-        control = False
-        pid.setpoint = 0
-
-    time_since_last_pid_call_ms = ticks_diff(current_time, last_pid_call) / 1000
+    time_since_last_pid_call_ms = ticks_diff(current_time, last_pid_call)
     if DETUMBLING_MODE:
-        if time_since_last_pid_call_ms >= 100:
+        if time_since_last_pid_call_ms >= 100_000:
             last_pid_call = current_time
             averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
             print(f"\nCalling PID with rotation rate of {averaged_input:+.4f} dps")
@@ -406,7 +402,7 @@ while True:
         light_sensor_4_buffer.append(light_sensor_4_value)
         light_sensor_5_buffer.append(light_sensor_5_value)
         light_sensor_6_buffer.append(light_sensor_6_value)
-        if time_since_last_pid_call_ms >= 100:
+        if time_since_last_pid_call_ms >= 100_000:
             last_pid_call = current_time
             averaged_input = sum(z_gyro_buffer) / BUFFER_LENGTH
             pid.setpoint = get_desired_setpoint([
@@ -417,6 +413,13 @@ while True:
                 sum(light_sensor_5_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
                 sum(light_sensor_6_buffer) / LIGHT_SENSOR_BUFFER_LENGTH,
             ])
+            # try:
+            #     times_rates.append(current_time)
+            #     commanded_rates.append(pid.setpoint)
+            #     rates.append(averaged_input)
+            # except MemoryError:
+            #     set_speed(0)
+            #     flash_error_message(2)
             diff = pid.get_control_output(averaged_input)
             current_speed = nominal_speed + diff
             set_speed(current_speed)
