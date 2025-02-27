@@ -34,4 +34,3 @@ ax2.set_xlabel("t [s]")
 fig.tight_layout()
 fig.savefig(root_dir / "disturbance.pdf", bbox_inches="tight", dpi=300)
 plt.show()
-
