@@ -4,11 +4,7 @@ import matplotlib.pyplot as plt
 
 
 root_dir = Path(__file__).parents[2]
-file = root_dir / "recording-config-1.txt"
-
-# detumble positive: recording-plots-2.txt (or maybe use 7 instead? check)
-# detumble negative: recording-plots-4.txt
-# disturbance rejection: recording-plots-10.txt
+file = root_dir / "recording-plots-ls-4.txt"
 with open(file, "r") as f:
     start_time = int(f.readline().split()[1].strip())
 
@@ -16,16 +12,17 @@ data = np.loadtxt(file, skiprows=1)
 data[:, 1] -= start_time
 data[:, 1] /= 1e6
 
-rates = data[data[:, 0] == 0][:, 1:3]
+rates = data[data[:, 0] == 0][:, 1:4]
 outputs = data[data[:, 0] == 1][:, 1:]
 
 
 fig, ax1 = plt.subplots(figsize=(12, 8))
 ax1.grid()
 ax1.plot(rates[:, 0], rates[:, 1], c="tab:blue", label="Rotation rate, dps")
+ax1.plot(rates[:, 0], rates[:, 2], c="tab:red", label="Target rotation rate, dps")
 ax1.tick_params(axis="y", labelcolor="tab:blue")
 ax1.set_ylabel("Rotation rate [deg/s]")
-ax1.set_ylim(bottom=-260, top=260)
+ax1.set_ylim(bottom=-40, top=40)
 
 ax2 = ax1.twinx()
 ax2.grid()
